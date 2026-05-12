@@ -1,0 +1,22 @@
+%% Pipeline OpenTelemetry + Prometheus (detalhe complementar ao diagrama principal) %%
+sequenceDiagram
+  autonumber
+  participant C as Cliente HTTP
+  participant V as Pod vLLmOpenAI inferencia
+  participant S3 as Mount S3 models
+  participant O as OTel Collector observability
+  participant P as Prometheus monitoring
+  participant K as KEDA metrics adapter
+  participant SM as AWS Secrets Manager
+  participant CX as Coralogix OTLP
+
+  C->>V: POST /v1/chat/completions ou completions
+  V->>S3: leitura pesos via Mountpoint CSI IRSA vllm
+  V-->>O: OTLP traces metrics opcional gRPC 4317
+  O->>V: GET /metrics scrape Prometheus receiver
+  P->>V: GET /metrics scrape job vllm
+  P->>O: GET /metrics scrape self-metrics 8888
+  O->>SM: leitura credencial via Secret Store CSI IRSA otel sync env
+  O->>CX: OTLP export gRPC headers Authorization Bearer
+  K->>P: PromQL sum vllm_num_requests_waiting
+  K->>V: HPA scale Deployment vllm-openai

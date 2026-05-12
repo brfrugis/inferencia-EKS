@@ -17,6 +17,7 @@ A **execução operacional** (validação Terraform, plan, apply, deploy Kuberne
 | `terraform/` | VPC, EKS, bucket S3 de modelos, IRSA (vLLM, OTel, EBS CSI), módulo Karpenter (fila de interrupção, role de nós), Helm: Karpenter, Secret Store CSI (+ provider AWS), Mountpoint S3 CSI, KEDA. |
 | `k8s/` | Namespaces, vLLM (GPU + template Neuron), Karpenter `NodePool`/`EC2NodeClass`, KEDA `ScaledObject`, Prometheus mínimo para o KEDA, NVIDIA device plugin, manifests do OTel + `kustomization` que referencia `otel/config.yaml`. |
 | `otel/config.yaml` | Pipelines OTLP + scrape Prometheus do `/metrics` do vLLM, processadores `k8sattributes`, `resourcedetection` (ec2), `resource` (região e nome do cluster via placeholders substituídos no deploy). |
+| `diagramas/` | Mermaid detalhado (`arquitetura-inferencia-eks.mmd`), pipeline OTel, e espaço para o `.jpg` exportado. |
 | `.github/workflows/` | CI/CD: Terraform validate/plan/apply, deploy Kubernetes, benchmarks vLLM. |
 | `.github/DEPLOYMENT.md` | Segredos OIDC, variáveis de repositório e ambientes GitHub necessários. |
 
@@ -87,6 +88,14 @@ O deployment define `OTEL_EXPORTER_OTLP_ENDPOINT` para `otel-collector.observabi
 - [Secrets Store CSI Driver](https://secrets-store-csi-driver.sigs.k8s.io/)
 - [vLLM](https://docs.vllm.ai/)
 - [GitHub Actions OIDC com AWS](https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
+
+## Diagrama de arquitetura
+
+O desenho editável em Mermaid está em [`diagramas/arquitetura-inferencia-eks.mmd`](diagramas/arquitetura-inferencia-eks.mmd). Há ainda um diagrama de sequência complementar em [`diagramas/pipeline-opentelemetry.mmd`](diagramas/pipeline-opentelemetry.mmd).
+
+Depois de exportar o diagrama principal para JPEG (por exemplo em [mermaid.live](https://mermaid.live)), coloque o ficheiro em **`diagramas/arquitetura-inferencia-eks.jpg`**; a imagem aparecerá abaixo quando existir no repositório. Instruções curtas: [`diagramas/README.md`](diagramas/README.md).
+
+![Arquitetura inferencia-EKS](diagramas/arquitetura-inferencia-eks.jpg)
 
 ## Licença
 

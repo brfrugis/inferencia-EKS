@@ -1,0 +1,179 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#e8f4fc', 'primaryTextColor': '#0b1f33', 'lineColor': '#2563eb', 'secondaryColor': '#f0fdf4', 'tertiaryColor': '#fff7ed'}}}%%
+%% inferencia-EKS — diagrama detalhado (Mermaid). Exportar JPG: https://mermaid.live ou extensão Mermaid %%
+flowchart TB
+  %% ========= GitHub =========
+  subgraph GH["GitHub — repositório inferencia-EKS"]
+    direction TB
+    subgraph GHWF["Workflows (.github/workflows)"]
+      direction LR
+      WVAL["terraform-validate.yml"]
+      WPLAN["terraform-plan.yml"]
+      WAPPLY["terraform-apply.yml"]
+      WK8S["kubernetes-deploy.yml"]
+      WBENCH["vllm-benchmarks.yml"]
+    end
+    subgraph GHSEC["Credenciais e configuração"]
+      OIDC["OIDC id-token"]
+      SEC_AWS["Secret AWS_ROLE_ARN"]
+      VAR_TF["Vars TF_MODEL_BUCKET_NAME TF_CORALOGIX_SECRET_ARN"]
+      VAR_K8S["Vars CLUSTER_NAME AWS_REGION KARPENTER_NODE_IAM_ROLE_NAME VLLM_IRSA_ROLE_ARN OTEL_IRSA_ROLE_ARN MODEL_BUCKET MODEL_DIR CORALOGIX_SECRET_ARN CORALOGIX_OTLP_HOST"]
+    end
+    SRC["Fontes: terraform/ k8s/ otel/ .github/"]
+    SRC --> GHWF
+    GHSEC --> GHWF
+  end
+
+  subgraph AWS_TOP["AWS — topo lógico"]
+    STS["AWS STS AssumeRoleWithWebIdentity"]
+  end
+
+  OIDC --> STS
+  SEC_AWS --> STS
+  WAPPLY --> TFCLI["Terraform CLI"]
+  WK8S --> KUBECTL["kubectl + aws eks update-kubeconfig"]
+  STS --> TFCLI
+  STS --> KUBECTL
+
+  %% ========= AWS conta =========
+  subgraph AWS["Conta AWS — região configurável"]
+    direction TB
+
+    subgraph IAM["IAM"]
+      IRSA_EKS["OIDC provider EKS + trust IRSA"]
+      ROLE_KARP_CTRL["Role Karpenter controller"]
+      ROLE_KARP_NODE["Role + instance profile nós Karpenter"]
+      ROLE_VLLM["Role SA inferencia/vllm — S3 modelos"]
+      ROLE_OTEL["Role SA observability/otel-collector — Secrets Manager"]
+      ROLE_EBS["Role SA ebs-csi-controller"]
+    end
+
+    subgraph VPC["VPC terraform-aws-modules/vpc"]
+      direction TB
+      IGW["Internet Gateway"]
+      NAT["NAT Gateway single_nat_gateway"]
+      RT_PRIV["Rotas subnets privadas para NAT"]
+      IGW --> NAT
+      NAT --> RT_PRIV
+    end
+
+    subgraph DATA["Dados"]
+      S3B["S3 bucket pesos modelos SSE + versioning"]
+      AWS_SM["Secrets Manager segredo Coralogix JSON private_key"]
+    end
+
+    subgraph EKS["Amazon EKS"]
+      direction TB
+      CP["Control plane Kubernetes"]
+      subgraph ADDONS["Add-ons e charts Helm via Terraform"]
+        VPCCNI["addon vpc-cni"]
+        COREDNS["addon coredns"]
+        KUBEPROXY["addon kube-proxy"]
+        EBSADDON["addon aws-ebs-csi-driver + IRSA"]
+        HR_KARP["Helm Karpenter + SQS interruption"]
+        HR_SCSI["Helm secrets-store-csi-driver + provider aws"]
+        HR_S3CSI["Helm aws-mountpoint-s3-csi-driver"]
+        HR_KEDA["Helm KEDA"]
+      end
+      subgraph MNG["Managed node group system"]
+        SYSNODES["Instâncias m5/m6i workloads sistema"]
+      end
+    end
+
+    subgraph COMPUTE["Karpenter EC2NodeClass + NodePool"]
+      direction LR
+      NP_GPU["NodePool gpu-p7-p5 EC2NodeClass gpu p7d p5 p4d p4de taint nvidia.com/gpu"]
+      NP_INF["NodePool inf2 EC2NodeClass neuron taint aws.amazon.com/neuron"]
+      GPUHOST["Nós GPU NVIDIA"]
+      INFHOST["Nós inf2 Neuron"]
+      NP_GPU --> GPUHOST
+      NP_INF --> INFHOST
+    end
+
+    RT_PRIV --> SYSNODES
+    RT_PRIV --> GPUHOST
+    RT_PRIV --> INFHOST
+    CP --> ADDONS
+    CP --> MNG
+    ROLE_KARP_CTRL --> HR_KARP
+    ROLE_KARP_NODE --> NP_GPU
+    ROLE_KARP_NODE --> NP_INF
+  end
+
+  TFCLI --> VPC
+  TFCLI --> IAM
+  TFCLI --> DATA
+  TFCLI --> EKS
+  TFCLI --> HR_KARP
+  TFCLI --> HR_SCSI
+  TFCLI --> HR_S3CSI
+  TFCLI --> HR_KEDA
+
+  %% ========= Kubernetes =========
+  subgraph K8S["Kubernetes — visão workloads"]
+    direction TB
+
+    subgraph NS_KUBE["kube-system"]
+      EBSCTL["EBS CSI controller"]
+      SS_CSI["Secret Store CSI driver + AWS provider"]
+      S3CSI["Mountpoint S3 CSI driver"]
+      NVD["NVIDIA device plugin DaemonSet"]
+    end
+
+    subgraph NS_KARP["karpenter"]
+      KARPOD["Pods Karpenter controller"]
+    end
+
+    subgraph NS_KEDA["keda"]
+      KEDAOP["KEDA operator"]
+      METRICS["keda-metrics-apiserver"]
+    end
+
+    subgraph NS_MON["monitoring"]
+      PROM["Prometheus scrape vLLM e OTel self-metrics"]
+    end
+
+    subgraph NS_INF["inferencia"]
+      SA_VLLM["ServiceAccount vllm IRSA"]
+      PV_S3["PV PVC models-s3 s3.csi.aws.com authenticationSource pod"]
+      DEP_GPU["Deployment vllm-openai vllm OpenAI PagedAttention batching"]
+      DEP_NEU["Deployment vllm-openai-neuron opcional"]
+      SVC_VLLM["Service vllm-openai :8000"]
+      SO_KEDA["ScaledObject Prometheus vllm_num_requests_waiting"]
+      DEP_GPU --> SVC_VLLM
+      PV_S3 --> DEP_GPU
+      SA_VLLM --> DEP_GPU
+    end
+
+    subgraph NS_OBS["observability"]
+      SA_OTEL["ServiceAccount otel-collector IRSA"]
+      SPC["SecretProviderClass coralogix sync Secret"]
+      CM_OTEL["ConfigMap otel-collector-config Kustomize otel/config.yaml"]
+      DEP_OTEL["Deployment OpenTelemetry Collector contrib receivers OTLP Prometheus processors k8sattributes resourcedetection resource batch exporters OTLP Coralogix"]
+      SVC_OTEL["Service otel-collector 4317 4318 8888"]
+      SPC --> DEP_OTEL
+      CM_OTEL --> DEP_OTEL
+      SA_OTEL --> DEP_OTEL
+    end
+
+    KEDAOP --> SO_KEDA
+    PROM -->|PromQL| SO_KEDA
+    PROM -->|GET metrics| SVC_VLLM
+    DEP_OTEL -->|GET metrics| SVC_VLLM
+    DEP_GPU -->|OTLP gRPC| SVC_OTEL
+  end
+
+  subgraph EXT["Externo"]
+    CX["Coralogix OTLP gRPC Authorization Bearer"]
+    USR["Clientes API OpenAI-compatible"]
+  end
+
+  KUBECTL --> CP
+  CP --> K8S
+
+  USR -->|HTTP TLS Ingress ou LB fora do repo| SVC_VLLM
+  DEP_OTEL -->|export OTLP| CX
+  SPC -.->|GetSecretValue DescribeSecret| AWS_SM
+  SA_VLLM -.->|AssumeRoleWithWebIdentity| ROLE_VLLM
+  SA_OTEL -.->|AssumeRoleWithWebIdentity| ROLE_OTEL
+  PV_S3 -.->|Mountpoint leitura| S3B
+  KARPOD -.->|AssumeRoleWithWebIdentity| ROLE_KARP_CTRL
