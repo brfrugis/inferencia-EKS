@@ -1,0 +1,120 @@
+name: Kubernetes deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: kubernetes-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require repository variables
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          CLUSTER_NAME: ${{ vars.CLUSTER_NAME }}
+          KARPENTER_NODE_IAM_ROLE_NAME: ${{ vars.KARPENTER_NODE_IAM_ROLE_NAME }}
+          VLLM_IRSA_ROLE_ARN: ${{ vars.VLLM_IRSA_ROLE_ARN }}
+          OTEL_IRSA_ROLE_ARN: ${{ vars.OTEL_IRSA_ROLE_ARN }}
+          MODEL_BUCKET: ${{ vars.MODEL_BUCKET }}
+          MODEL_DIR: ${{ vars.MODEL_DIR }}
+          CORALOGIX_SECRET_ARN: ${{ vars.CORALOGIX_SECRET_ARN }}
+          CORALOGIX_OTLP_HOST: ${{ vars.CORALOGIX_OTLP_HOST }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for v in AWS_REGION CLUSTER_NAME KARPENTER_NODE_IAM_ROLE_NAME VLLM_IRSA_ROLE_ARN OTEL_IRSA_ROLE_ARN MODEL_BUCKET MODEL_DIR CORALOGIX_SECRET_ARN CORALOGIX_OTLP_HOST; do
+            if [ -z "${!v:-}" ]; then echo "::error::Missing repository variable: $v"; missing=1; fi
+          done
+          exit "$missing"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.31.2"
+
+      - name: kubeconfig
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          CLUSTER_NAME: ${{ vars.CLUSTER_NAME }}
+        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Render manifests
+        env:
+          CLUSTER_NAME: ${{ vars.CLUSTER_NAME }}
+          KARPENTER_NODE_IAM_ROLE_NAME: ${{ vars.KARPENTER_NODE_IAM_ROLE_NAME }}
+          VLLM_IRSA_ROLE_ARN: ${{ vars.VLLM_IRSA_ROLE_ARN }}
+          OTEL_IRSA_ROLE_ARN: ${{ vars.OTEL_IRSA_ROLE_ARN }}
+          MODEL_BUCKET: ${{ vars.MODEL_BUCKET }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          CORALOGIX_SECRET_ARN: ${{ vars.CORALOGIX_SECRET_ARN }}
+          CORALOGIX_OTLP_HOST: ${{ vars.CORALOGIX_OTLP_HOST }}
+          MODEL_DIR: ${{ vars.MODEL_DIR }}
+        run: |
+          set -euo pipefail
+          ROOT="${GITHUB_WORKSPACE}"
+          RENDER="${ROOT}/build/k8s-rendered"
+          rm -rf "${RENDER}"
+          mkdir -p "${RENDER}/otel"
+          cp -R "${ROOT}/k8s" "${RENDER}/k8s"
+          cp "${ROOT}/otel/config.yaml" "${RENDER}/otel/config.yaml"
+
+          substitute() {
+            sed \
+              -e "s|REPLACE_CLUSTER_NAME|${CLUSTER_NAME}|g" \
+              -e "s|REPLACE_NODE_IAM_ROLE_NAME|${KARPENTER_NODE_IAM_ROLE_NAME}|g" \
+              -e "s|REPLACE_VLLM_IRSA_ROLE_ARN|${VLLM_IRSA_ROLE_ARN}|g" \
+              -e "s|REPLACE_OTEL_IRSA_ROLE_ARN|${OTEL_IRSA_ROLE_ARN}|g" \
+              -e "s|REPLACE_BUCKET|${MODEL_BUCKET}|g" \
+              -e "s|REPLACE_REGION|${AWS_REGION}|g" \
+              -e "s|REPLACE_CORALOGIX_SECRET_ARN|${CORALOGIX_SECRET_ARN}|g" \
+              -e "s|REPLACE_CORALOGIX_OTLP_HOST|${CORALOGIX_OTLP_HOST}|g" \
+              -e "s|REPLACE_MODEL_DIR|${MODEL_DIR}|g"
+          }
+
+          tmp_otel="$(mktemp)"
+          substitute < "${RENDER}/otel/config.yaml" > "${tmp_otel}"
+          mv "${tmp_otel}" "${RENDER}/otel/config.yaml"
+
+          while IFS= read -r -d '' f; do
+            [ "$(basename "$f")" = "deployment-vllm-neuron.yaml" ] && continue
+            tmp="${f}.tmp"
+            substitute < "$f" > "${tmp}"
+            mv "${tmp}" "$f"
+          done < <(find "${RENDER}/k8s" -type f \( -name '*.yaml' -o -name '*.yml' \) -print0)
+
+      - name: kubectl apply (workloads)
+        run: |
+          set -euo pipefail
+          RENDER="${GITHUB_WORKSPACE}/build/k8s-rendered"
+          kubectl apply -f "${RENDER}/k8s/namespaces.yaml"
+          if [ -f "${RENDER}/k8s/monitoring/prometheus-minimal.yaml" ]; then
+            kubectl apply -f "${RENDER}/k8s/monitoring/prometheus-minimal.yaml"
+          fi
+          while IFS= read -r -d '' f; do
+            kubectl apply -f "$f"
+          done < <(find "${RENDER}/k8s" -type f \( -name '*.yaml' -o -name '*.yml' \) \
+            ! -name 'kustomization.yaml' \
+            ! -path '*/observability/*' \
+            ! -path '*/namespaces.yaml' \
+            ! -path '*/monitoring/prometheus-minimal.yaml' \
+            -print0)
+
+      - name: kubectl apply (OpenTelemetry Kustomize)
+        run: kubectl apply -k "${GITHUB_WORKSPACE}/build/k8s-rendered/k8s/observability"

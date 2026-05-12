@@ -1,0 +1,57 @@
+# EC2NodeClass e NodePool para inf2 (Trainium/Inferentia2). Ajuste AMI/AL2023 conforme região.
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: neuron
+spec:
+  role: REPLACE_NODE_IAM_ROLE_NAME
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: REPLACE_CLUSTER_NAME
+  securityGroupSelectorTerms:
+    - tags:
+        kubernetes.io/cluster/REPLACE_CLUSTER_NAME: owned
+  amiSelectorTerms:
+    - alias: al2023@latest
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 200Gi
+        volumeType: gp3
+        deleteOnTermination: true
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: inf2
+spec:
+  template:
+    metadata:
+      labels:
+        intent: inference-neuron
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: neuron
+      taints:
+        - key: aws.amazon.com/neuron
+          value: "true"
+          effect: NoSchedule
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand", "spot"]
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["inf2"]
+  limits:
+    cpu: 512
+    memory: 2000Gi
+    aws.amazon.com/neuron: 64
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 20m

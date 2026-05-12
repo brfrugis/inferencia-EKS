@@ -1,0 +1,54 @@
+name: Terraform plan
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform-plan.yml"
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+defaults:
+  run:
+    working-directory: terraform
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Terraform init
+        run: terraform init -backend=false -input=false
+
+      - name: Write plan tfvars
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          CORALOGIX: ${{ vars.TF_CORALOGIX_SECRET_ARN }}
+        run: |
+          set -euo pipefail
+          cat > ci.auto.tfvars <<EOF
+          model_bucket_name = "ci-plan-${RUN_ID}-${RUN_ATTEMPT}"
+          EOF
+          if [ -n "${CORALOGIX:-}" ]; then
+            echo "coralogix_secret_arn = \"${CORALOGIX}\"" >> ci.auto.tfvars
+          fi
+
+      - name: Terraform plan
+        run: terraform plan -no-color -input=false -var-file=ci.auto.tfvars -lock=false

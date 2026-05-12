@@ -1,0 +1,63 @@
+# Template Neuron (inf2): substitua REPLACE_NEURON_VLLM_IMAGE por imagem com vLLM+Neuron
+# compilada para sua região e modelo. Mantemos replicas: 0 até haver imagem válida.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-openai-neuron
+  namespace: inferencia
+  labels:
+    app: vllm-openai-neuron
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: vllm-openai-neuron
+  template:
+    metadata:
+      labels:
+        app: vllm-openai-neuron
+    spec:
+      serviceAccountName: vllm
+      nodeSelector:
+        karpenter.k8s.aws/instance-family: inf2
+      tolerations:
+        - key: aws.amazon.com/neuron
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: vllm
+          image: REPLACE_NEURON_VLLM_IMAGE
+          args:
+            - --model
+            - /models/REPLACE_MODEL_DIR
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: vllm-neuron
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.observability.svc.cluster.local:4317
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: grpc
+          resources:
+            limits:
+              aws.amazon.com/neuron: 1
+              memory: 32Gi
+              cpu: "8"
+            requests:
+              aws.amazon.com/neuron: 1
+              memory: 16Gi
+              cpu: "4"
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models-s3

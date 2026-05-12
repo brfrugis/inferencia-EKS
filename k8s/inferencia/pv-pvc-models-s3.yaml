@@ -1,0 +1,33 @@
+# PV estático para Mountpoint for Amazon S3 CSI (objeto compartilhado entre pods).
+# Substitua REPLACE_BUCKET e REPLACE_REGION (ex.: envsubst após terraform output).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-models-s3
+spec:
+  capacity:
+    storage: 1Pi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  csi:
+    driver: s3.csi.aws.com
+    volumeHandle: pv-models-s3
+    volumeAttributes:
+      bucketName: REPLACE_BUCKET
+      authenticationSource: pod
+      region: REPLACE_REGION
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-s3
+  namespace: inferencia
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Pi
+  volumeName: pv-models-s3
+  storageClassName: ""

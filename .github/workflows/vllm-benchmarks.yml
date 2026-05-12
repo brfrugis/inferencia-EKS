@@ -1,0 +1,66 @@
+name: vLLM benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      vllm_url:
+        description: "URL completa do endpoint (ex.: https://api.exemplo/v1/completions)"
+        required: true
+        type: string
+      model_id:
+        description: "Valor do campo model (ex.: /models/Meta-Llama-3-8B-Instruct ou nome registado)"
+        required: true
+        type: string
+      requests:
+        description: "Número total de pedidos (hey -n)"
+        required: false
+        default: "500"
+        type: string
+      concurrency:
+        description: "Concorrência (hey -c)"
+        required: false
+        default: "10"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  load-and-latency:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: Install hey
+        run: go install github.com/rakyll/hey@latest
+
+      - name: Add Go bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Warmup / latency (curl)
+        env:
+          VLLM_URL: ${{ inputs.vllm_url }}
+          MODEL_ID: ${{ inputs.model_id }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -n --arg model "${MODEL_ID}" '{model: $model, prompt: "Warmup latency probe", max_tokens: 16, temperature: 0}')"
+          curl -sS -o /dev/null -w $'http_code=%{http_code} time_total=%{time_total}\n' \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            "${VLLM_URL}"
+
+      - name: Load test (hey)
+        env:
+          VLLM_URL: ${{ inputs.vllm_url }}
+          MODEL_ID: ${{ inputs.model_id }}
+          REQUESTS: ${{ inputs.requests }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+        run: |
+          set -euo pipefail
+          body="$(jq -n --arg model "${MODEL_ID}" '{model: $model, prompt: "Hello", max_tokens: 32}')"
+          hey -n "${REQUESTS}" -c "${CONCURRENCY}" -m POST -T "application/json" \
+            -d "${body}" \
+            "${VLLM_URL}"

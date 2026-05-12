@@ -1,0 +1,102 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: vllm
+          scrape_interval: 15s
+          metrics_path: /metrics
+          static_configs:
+            - targets: ["vllm-openai.inferencia.svc.cluster.local:8000"]
+          relabel_configs:
+            - target_label: service.name
+              replacement: vllm-inferencia
+        # Descomente após expor o DCGM Exporter (ex.: via NVIDIA GPU Operator).
+        # - job_name: dcgm
+        #   scrape_interval: 15s
+        #   static_configs:
+        #     - targets: ["dcgm-exporter.gpu-monitoring.svc.cluster.local:9400"]
+        # Descomente se implantar o Neuron Monitor em cluster com inf2.
+        # - job_name: neuron
+        #   scrape_interval: 30s
+        #   static_configs:
+        #     - targets: ["neuron-monitor.neuron.svc.cluster.local:8000"]
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 768
+    spike_limit_mib: 256
+
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+  k8sattributes:
+    auth_type: serviceAccount
+    passthrough: false
+    extract:
+      metadata:
+        - k8s.namespace.name
+        - k8s.deployment.name
+        - k8s.pod.name
+        - k8s.pod.uid
+        - k8s.node.name
+    pod_association:
+      - sources:
+          - from: resource_attribute
+            name: k8s.pod.ip
+      - sources:
+          - from: resource_attribute
+            name: k8s.pod.uid
+
+  resourcedetection:
+    detectors: [env, system, ec2]
+    timeout: 5s
+    override: false
+
+  resource:
+    attributes:
+      - key: cluster.name
+        action: upsert
+        value: REPLACE_CLUSTER_NAME
+      - key: cloud.region
+        action: upsert
+        value: REPLACE_REGION
+      - key: cloud.provider
+        action: insert
+        value: aws
+
+exporters:
+  otlp:
+    endpoint: ${env:CORALOGIX_OTLP_HOST}
+    compression: gzip
+    tls:
+      insecure: false
+    headers:
+      Authorization: Bearer ${env:CORALOGIX_PRIVATE_KEY}
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
+  pipelines:
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, resourcedetection, k8sattributes, resource, batch]
+      exporters: [otlp]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, k8sattributes, resource, batch]
+      exporters: [otlp]

@@ -1,0 +1,13 @@
+aws_region       = "us-east-1"
+cluster_name     = "inferencia-eks"
+cluster_version  = "1.31"
+vpc_cidr         = "10.0.0.0/16"
+model_bucket_name = "inferencia-models-UNIQUE-SUFFIX"
+
+# Opcional: ARN do segredo JSON no Secrets Manager (chave "private_key" para Coralogix).
+# Quando definido, o Terraform cria IRSA para observability/otel-collector.
+# coralogix_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:coralogix-xxxxx"
+
+tags = {
+  Project = "inferencia-llm"
+}
